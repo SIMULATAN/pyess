@@ -30,13 +30,13 @@ def on_message(client, userdata, msg):
     print(msg.topic + " " + str(msg.payload))
 
 
-async def recursive_publish_dict(mqtt_client, publish_root, dictionary):
+async def recursive_publish_dict(mqtt_client, namespace, publish_root, dictionary):
     for key, value in dictionary.items():
         if isinstance(value, dict):
-            await recursive_publish_dict(mqtt_client, f"{publish_root}/{key}", value)
+            await recursive_publish_dict(mqtt_client, namespace, f"{publish_root}/{key}", value)
         else:
             try:
-                await mqtt_client.publish(f"{publish_root}/{key}", value)
+                await mqtt_client.publish(f"ess/{namespace}/{publish_root}/{key}", value)
             except (aiomqtt.error.MqttCodeError, TimeoutError): # pragma: no cover
                 logger.warning("Lost MQTT connection to mqtt errorcode or timeout, restarting", exc_info=True)
                 raise
@@ -45,18 +45,18 @@ async def recursive_publish_dict(mqtt_client, publish_root, dictionary):
                 raise
 
 
-async def send_loop(ess, mqtt_client=None, graphite_client=None, once=False, interval_seconds=10, common_divisor=1):
+async def send_loop(ess, mqtt_client=None, graphite_client=None, once=False, interval_seconds=10, common_divisor=1, namespace="myess"):
     logger.info("starting send loop")
     i = 0
     while True:
         if not once:
             await asyncio.sleep(1)
         home = await ess.get_state("home")
-        await recursive_publish_dict(mqtt_client, "ess/home", home)
+        await recursive_publish_dict(mqtt_client, namespace, "home", home)
 
         if i % common_divisor == 0:
             common = await ess.get_state("common")
-            await recursive_publish_dict(mqtt_client, "ess/common", common)
+            await recursive_publish_dict(mqtt_client, namespace, "common", common)
 
         i += 1
         if once:
@@ -64,8 +64,12 @@ async def send_loop(ess, mqtt_client=None, graphite_client=None, once=False, int
         await asyncio.sleep(interval_seconds - 1)
 
 
-def prepare_description(sensor):
-    description = {"name": sensor, "state_topic": sensor, "unique_id": sensor.replace("/",""), "device": {"identifiers": ["lgesss"], "manufacturer": "LG", "model": "ESS", "name": "ESS", "sw_version": "pyess"}}
+def prepare_description(sensor, namespace="myess"):
+    description = {
+        "name": sensor, "state_topic": f"ess/{namespace}/{sensor}",
+        "unique_id": f"ess.{namespace}.{sensor.replace('/', '')}",
+        "device": {"identifiers": [f"lgesss_{namespace}"], "manufacturer": "LG", "model": "ESS", "name": namespace, "sw_version": "pyess"}
+    }
     if "power" in sensor:
         description["device_class"] = "power"
         description["unit_of_measurement"] = "W"
@@ -99,15 +103,15 @@ def prepare_description(sensor):
     return description
 
 
-async def announce_loop(client, sensors=None):
+async def announce_loop(client, namespace, sensors=None):
     if sensors is None:
         return
 
     for sensor in sensors:
         try:
             node_type = "switch" if "control" in sensor else "sensor"
-            await client.publish(f"homeassistant/{node_type}/{sensor.replace('/', '')}/config",
-                                 json.dumps(prepare_description(sensor)), retain=True, qos=2)
+            await client.publish(f"homeassistant/{node_type}/{sensor.replace('/', '-')}/config",
+                                 json.dumps(prepare_description(sensor, namespace)), retain=True, qos=2)
         except (aiomqtt.error.MqttCodeError, TimeoutError): # pragma: no cover
             logger.warning("Lost MQTT connection to mqtt errorcode in announce loop, send loop will exit")
         except:  # pragma: no cover
@@ -139,12 +143,13 @@ async def _main( arguments=None):
     parser.add_argument("--mqtt_password", default=None, help="mqtt password")
     parser.add_argument("--mqtt_user", default=None, help="mqtt user")
     parser.add_argument("--ess_host", default=None, help="hostname or IP of mqtt host (discover via mdns if not set)")
+    parser.add_argument("--ess_name", default="myess", help="Name of the ESS (default: myess) - used as the namespace for the mqtt topics")
     parser.add_argument("--once", default=False, type=bool, help="no loop, only one pass")
     parser.add_argument("--common_divisor", default=1, type=int,
                         help="multiply interval_seconds for values below 'common' by this factor")
     parser.add_argument("--interval_seconds", default=10, type=int, help="update interval (default: 10 seconds)")
     parser.add_argument("--hass_autoconfig_sensors", default=None, help="comma-separated list of sensors to advertise"
-                                                                        "for homassistant autconfig")
+                                                                        "for homassistant autconfig - will be prefixed by ess/<namespace>/")
 
     args = parser.parse_args(arguments)
     if args.ess_host is None:
@@ -212,23 +217,25 @@ async def _main( arguments=None):
 async def launch_main_loop(args, ess, handle_control, switch_active, switch_fastcharge, switch_winter):
     async with Client(args.mqtt_server, port=args.mqtt_port, logger=logger, username=args.mqtt_user,
                       password=args.mqtt_password) as client:
+        namespace = args.ess_name
+
         # seems that a leading slash is frowned upon in mqtt, but we keep this for backwards compatibility
-        await client.subscribe('/ess/control/#')
+        await client.subscribe(f"/ess/{namespace}/control/#")
         asyncio.create_task(handle_control(client, switch_winter, "/ess/control/winter_mode"))
         asyncio.create_task(handle_control(client, switch_fastcharge, "/ess/control/fastcharge"))
         asyncio.create_task(handle_control(client, switch_active, "/ess/control/active"))
 
         # also subscribe without leading slash for better style
-        await client.subscribe('ess/control/#')
+        await client.subscribe(f"ess/{namespace}/control/#")
         asyncio.create_task(handle_control(client, switch_winter, "ess/control/winter_mode"))
         asyncio.create_task(handle_control(client, switch_fastcharge, "ess/control/fastcharge"))
         asyncio.create_task(handle_control(client, switch_active, "ess/control/active"))
         if args.hass_autoconfig_sensors is not None:
             asyncio.ensure_future(
-                announce_loop(client, sensors=args.hass_autoconfig_sensors.split(",")))
+                announce_loop(client, namespace, sensors=args.hass_autoconfig_sensors.split(",")))
 
         await send_loop(ess, client, once=args.once, interval_seconds=args.interval_seconds,
-                        common_divisor=args.common_divisor)
+                        common_divisor=args.common_divisor, namespace=namespace)
 
 
 if __name__ == "__main__":
