@@ -3,6 +3,7 @@ credentials.json
 test_online*.yaml
 test_aio_online*.yaml
 pyess.egg-info
+pyess_simulatan.egg-info
 tox
 .pytest_cache
 .coverage
@@ -13,3 +14,4 @@ dist
 .idea
 .DS_Store
 __pycache__
+

@@ -3,7 +3,7 @@ from setuptools import setup
 
 from pyess import __version__ as version
 
-setup(name='pyess',
+setup(name='pyess-simulatan',
       version=version,
       description='Library for communicating with LG ESS solar power converters/batteries',
       classifiers=[
@@ -22,7 +22,7 @@ setup(name='pyess',
       packages=['pyess'],
 
       install_requires=[
-          'zeroconf', 'requests', 'graphyte', 'aiohttp', 'aiomqtt>=0.4.0', 'ConfigArgParse'
+          'zeroconf', 'requests', 'graphyte', 'aiohttp', 'aiomqtt >=0.4.0, <2', 'ConfigArgParse'
       ],
 
       zip_safe=False,
